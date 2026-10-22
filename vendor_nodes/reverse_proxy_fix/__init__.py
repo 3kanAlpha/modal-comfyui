@@ -1,4 +1,4 @@
-"""Let ComfyUI save workflows when Modal's proxy decodes %2F in userdata paths.
+"""Adapt ComfyUI userdata paths and WebSockets to Modal's reverse proxy.
 
 ComfyUI registers POST/DELETE ``/userdata/{file}`` for a single path segment,
 and its frontend percent-encodes the slash so ``workflows/foo.json`` travels as
@@ -10,12 +10,25 @@ Fix: after ComfyUI registers its routes, register the same userdata handlers
 under a slash-tolerant ``{file:.+}`` pattern so the decoded paths resolve to
 them. ComfyUI's handlers validate the path (``abspath`` + ``commonpath``), so a
 captured value containing ``/`` still cannot escape the user directory.
+
+Modal does not support permessage-deflate. Disable extension negotiation so
+browser WebSockets can keep receiving progress and completion messages.
 """
 
+from aiohttp import web
 from server import PromptServer
 
 _SUFFIX = "/userdata/{file}"
 _METHODS = ("POST", "DELETE")
+
+
+@web.middleware
+async def _disable_websocket_compression(request, handler):
+    if request.headers.get("Upgrade", "").lower() == "websocket":
+        headers = request.headers.copy()
+        headers.popall("Sec-WebSocket-Extensions", None)
+        request = request.clone(headers=headers)
+    return await handler(request)
 
 
 def _register_slash_tolerant_userdata(app):
@@ -37,6 +50,7 @@ _original_add_routes = PromptServer.add_routes
 
 def _add_routes(self):
     result = _original_add_routes(self)
+    self.app.middlewares.append(_disable_websocket_compression)
     _register_slash_tolerant_userdata(self.app)
     return result
 
